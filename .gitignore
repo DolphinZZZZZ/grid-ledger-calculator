@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+_extract/
+*.json.tmp
+books/_current.txt
+books/*.json
+*.lnk
+.codex-review/
+.venv/
