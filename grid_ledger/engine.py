@@ -717,7 +717,10 @@ class Engine:
         shares = integer_value(shares, "初始持仓")
         old = self.state.initial_shares
         config = replace(self.config, allow_short=True, allow_net_buy_over_zero=True, end_at_zero=False)
-        fill = self.adjust(f"改初始持仓 {old} → {shares}", initial_shares=shares, config=config)
+        fill = self.adjust(
+            f"改初始持仓 {old} → {shares}", initial_shares=shares,
+            position=self.state.position + shares - old, config=config,
+        )
         mk = self.mark()
         note = (
             f"初始持仓 {shares}（可负）  当前持仓 {self.state.position}  "

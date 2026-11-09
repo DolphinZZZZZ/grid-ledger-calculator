@@ -87,7 +87,7 @@ class TestUndo(unittest.TestCase):
 
 
 class TestInitialAndShort(unittest.TestCase):
-    def test_set_initial_syncs_net_and_gain(self):
+    def test_set_initial_syncs_position_and_preserves_net_and_gain(self):
         from grid_ledger.money import D
 
         eng = Engine(Config(), State(base="53.75", initial_shares=0, position=0))
@@ -103,15 +103,60 @@ class TestInitialAndShort(unittest.TestCase):
         self.assertEqual(before.actual, "1300.0611")
 
         eng.set_initial_shares(-3000)
-        self.assertEqual(eng.state.position, -3300)
+        self.assertEqual(eng.state.position, -2900)
         self.assertEqual(eng.state.initial_shares, -3000)
-        self.assertEqual(eng.state.net_bought(), -300)
+        self.assertEqual(eng.state.net_bought(), 100)
         after = eng.mark("53.35")
-        self.assertEqual(after.actual, "1300.0611")
+        self.assertEqual(D(after.actual), D(before.actual) + 400 * D("53.35"))
         self.assertEqual(D(after.hold), D(-3000) * D("53.35") + D("182644.0050"))
-        self.assertEqual(D(after.gain), D(after.actual) - D(after.hold))
+        self.assertEqual(after.gain, before.gain)
         self.assertTrue(eng.config.allow_short)
         self.assertTrue(eng.config.allow_net_buy_over_zero)
+
+    def test_set_initial_before_trades(self):
+        for old, new in ((0, 1500), (1000, 1500), (1000, -500), (-500, -1000), (-1000, 0)):
+            with self.subTest(old=old, new=new):
+                eng = Engine(Config(), State(base="53.75", initial_shares=old, position=old))
+                eng.set_initial_shares(new)
+                self.assertEqual(eng.state.initial_shares, new)
+                self.assertEqual(eng.state.position, new)
+                self.assertEqual(eng.state.net_bought(), 0)
+                self.assertEqual(eng.mark().gain, "0.0000")
+                self.assertEqual((eng.state.buy_count, eng.state.sell_count), (0, 0))
+
+    def test_set_initial_after_sales_preserves_trade_totals(self):
+        eng = Engine(Config(), State(base="53.70", initial_shares=2500, position=2500))
+        eng.submit(FillRequest(fill_price="55.10", side="sell"))
+        before = eng.state.to_dict()
+        gain = eng.mark().gain
+        result = eng.set_initial_shares(1500)
+        expected = dict(before, initial_shares=1500, position=1200)
+        self.assertEqual(eng.state.to_dict(), expected)
+        self.assertEqual(eng.state.net_bought(), -300)
+        self.assertEqual(eng.mark().gain, gain)
+        self.assertEqual(result.fills[0].kind, "adjust")
+        self.assertEqual(result.fills[0].position_after, 1200)
+
+    def test_set_initial_roundtrip_and_undo(self):
+        eng = Engine(Config(), State(base="53.70", initial_shares=2500, position=2500))
+        eng.submit(FillRequest(fill_price="55.10", side="sell"))
+        before = eng.to_dict()
+        eng.set_initial_shares(-500)
+        loaded = Engine.from_dict(eng.to_dict())
+        self.assertEqual((loaded.state.initial_shares, loaded.state.position), (-500, -800))
+        loaded.undo_batch()
+        self.assertEqual(loaded.state.to_dict(), before["state"])
+        self.assertEqual(loaded.config.to_dict(), before["config"])
+        self.assertEqual([fill.to_dict() for fill in loaded.fills], before["fills"])
+
+    def test_invalid_initial_does_not_change_account(self):
+        eng = Engine(Config(), State(base="53.70", initial_shares=2500, position=2200))
+        before = eng.to_dict()
+        for value in ("1.5", "bad", "NaN"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    eng.set_initial_shares(value)
+                self.assertEqual(eng.to_dict(), before)
 
     def test_unlock_allows_negative_position(self):
         cfg = Config(allow_short=False, allow_net_buy_over_zero=False, skip_fill=False)

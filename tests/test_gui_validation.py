@@ -7,6 +7,7 @@ from grid_ledger import book
 from grid_ledger.calc import project
 from grid_ledger.engine import Engine
 from grid_ledger.gui import App, NewBookDialog
+from grid_ledger.money import D
 
 
 def descendants(widget):
@@ -152,6 +153,77 @@ class TestGuiValidation(unittest.TestCase):
         self.popup.assert_called_once()
         self.assertEqual(self.app.buf.text, "100.5")
         self.assertEqual(self.app.qty_var.get(), "100")
+
+    def test_initial_stat_syncs_position_saves_and_can_undo(self):
+        self.app._use_level("buy1")
+        self.app._go("buy")
+        before = self.app.engine.state.to_dict()
+        gain = self.app.engine.mark().gain
+        self.root.deiconify()
+        self.root.update()
+        with patch("grid_ledger.gui._ask_int", return_value=1000) as ask:
+            self.app.stat["init"].event_generate("<Button-1>")
+        self.assertIn("当前持仓按差额同步", ask.call_args.args[2])
+        self.assertEqual(self.app.engine.state.initial_shares, 1000)
+        self.assertEqual(self.app.engine.state.position, 1100)
+        self.assertEqual(self.app.engine.state.net_bought(), 100)
+        self.assertEqual(self.app.engine.mark().gain, gain)
+        self.assertEqual(self.app.stat["init"].cget("text"), "1000")
+        self.assertEqual(self.app.stat["pos"].cget("text"), "1100")
+        _, loaded = book.load("测试")
+        self.assertEqual(loaded.state.to_dict(), self.app.engine.state.to_dict())
+        self.app._undo()
+        self.assertEqual(self.app.engine.state.to_dict(), before)
+        _, loaded = book.load("测试")
+        self.assertEqual(loaded.state.to_dict(), before)
+        self.popup.assert_not_called()
+
+    def test_price_buttons_adjust_displayed_precision_without_changing_book(self):
+        buttons = {w.cget("text"): w for w in descendants(self.app.pad)
+                   if isinstance(w, self.tk.Button)}
+        self.assertNotIn("初始", buttons)
+        before = copy.deepcopy(self.app.engine.to_dict())
+        saved = book.book_path("测试").read_bytes()
+        self.app.trigger_var.set("53.32")
+        self.app.qty_var.set("200")
+        for price, higher in (("53.32", "53.33"), ("53.755", "53.756"),
+                              ("9.99", "10.00"), ("53.3200", "53.3201")):
+            with self.subTest(price=price):
+                self.app.buf.set(price)
+                buttons["＋"].invoke()
+                self.assertEqual(self.app.lcd_var.get(), higher)
+                self.assertEqual(D(self.app.buf.price()), D(higher))
+                buttons["－"].invoke()
+                self.assertEqual(self.app.lcd_var.get(), price)
+        self.assertEqual(self.app.engine.to_dict(), before)
+        self.assertEqual(book.book_path("测试").read_bytes(), saved)
+        self.assertEqual(self.app.trigger_var.get(), "53.32")
+        self.assertEqual(self.app.qty_var.get(), "200")
+        self.app._press("9")
+        self.assertEqual(self.app.lcd_var.get(), "9")
+        self.popup.assert_not_called()
+
+    def test_price_nudge_uses_visible_price_instead_of_hidden_decimal(self):
+        self.app._use_level("sell1")
+        self.assertEqual(self.app.buf.text, "54.212")
+        self.assertEqual(self.app.buf.price(), "54.2119")
+        self.app._nudge_price(1)
+        self.assertEqual(self.app.buf.text, "54.213")
+        self.assertEqual(self.app.buf.price(), "54.213")
+        self.app._nudge_price(-1)
+        self.assertEqual(self.app.buf.text, "54.212")
+        self.assertEqual(self.app.buf.price(), "54.212")
+
+    def test_price_nudge_rejects_invalid_or_nonpositive_price(self):
+        before = copy.deepcopy(self.app.engine.to_dict())
+        for raw in ("", "bad", "NaN", "0", "0.01", "0.001"):
+            with self.subTest(raw=raw):
+                self.popup.reset_mock()
+                self.app.buf.set(raw)
+                self.app._nudge_price(-1)
+                self.popup.assert_called_once()
+                self.assertEqual(self.app.buf.text, raw)
+        self.assertEqual(self.app.engine.to_dict(), before)
 
     def _run_modal_action(self, action, open_dialog):
         errors = []

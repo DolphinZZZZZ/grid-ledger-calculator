@@ -47,9 +47,11 @@ class TestBookRoundtrip(unittest.TestCase):
         out, eng, _ = run_line(name, eng, "53.32b")
         out, eng, _ = run_line(name, eng, "初始持仓是-3000")
         self.assertEqual(eng.state.initial_shares, -3000)
-        self.assertEqual(eng.state.position, -3300)
-        self.assertEqual(eng.state.net_bought(), -300)
+        self.assertEqual(eng.state.position, -2900)
+        self.assertEqual(eng.state.net_bought(), 100)
         self.assertIn("初始持仓", out)
+        _, loaded = book.load(name)
+        self.assertEqual(loaded.state.to_dict(), eng.state.to_dict())
 
     def test_duplicate_and_rename_slots(self):
         book.create("甲", base="53.75", shares=-3400, opening_price="53.75")

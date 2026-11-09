@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
 
 from . import book
 from .calc import GridProjection, project
@@ -354,10 +354,10 @@ class App:
             ("股", 4, 1, KEY_MUTED, self._to_qty),
             ("现价", 4, 2, KEY_MUTED, self._mark),
             ("一格", 4, 3, KEY_MUTED, self._keep_one),
-            ("建仓", 5, 0, KEY_MUTED, self._opening),
-            ("不动", 5, 1, KEY_MUTED, self._reject),
-            ("改价", 5, 2, KEY_MUTED, self._amend),
-            ("初始", 5, 3, ENTER, self._edit_initial),
+            ("不动", 5, 0, KEY_MUTED, self._reject),
+            ("改价", 5, 1, KEY_MUTED, self._amend),
+            ("＋", 5, 2, BUY, lambda: self._nudge_price(1)),
+            ("－", 5, 3, SELL, lambda: self._nudge_price(-1)),
         ]
         for text, row, col, color, cmd in keys:
             b = tk.Button(
@@ -376,7 +376,7 @@ class App:
             )
             b.grid(row=row, column=col, sticky="nsew", padx=4, pady=4, ipadx=8, ipady=10)
         for i in range(4):
-            self.pad.grid_columnconfigure(i, weight=1)
+            self.pad.grid_columnconfigure(i, weight=1, uniform="keys")
         for i in range(6):
             self.pad.grid_rowconfigure(i, weight=1)
 
@@ -610,6 +610,18 @@ class App:
         self.buf.backspace()
         self._sync_lcd()
 
+    def _nudge_price(self, direction: int) -> None:
+        try:
+            price = D(self.buf.text)
+            places = max(2, -price.as_tuple().exponent)
+            adjusted = price + D(direction).scaleb(-places)
+            price_value(adjusted, "成交价")
+        except ValueError as e:
+            self._input_error(e)
+            return
+        self.buf.set(fmt_price(adjusted, places), fresh=True)
+        self._sync_lcd()
+
     def _clear(self) -> None:
         if self.engine and self.engine.pending:
             self._reject()
@@ -820,7 +832,7 @@ class App:
         val = _ask_int(
             self.root,
             "初始持仓",
-            "可负。只改对比基准，当前持仓不动；净买量、一直持有、增益会重算。",
+            "可负。当前持仓按差额同步调整，保留已发生的净买卖量与网格增益。",
             self.engine.state.initial_shares,
         )
         if val is None:
@@ -831,33 +843,6 @@ class App:
             self._input_error(e)
             return
         self._after_result(result)
-
-    def _opening(self) -> None:
-        price = self.buf.price()
-        if not price:
-            self._input_error("先输入建仓价格")
-            return
-        try:
-            price_value(price, "建仓价")
-        except ValueError as e:
-            self._input_error(e)
-            return
-        qty = simpledialog.askinteger("建仓", "数量（股）", parent=self.root, minvalue=1, initialvalue=3400)
-        if not qty:
-            return
-        side = messagebox.askquestion("建仓方向", "是卖出建仓吗？\n选「否」则为买入建仓", parent=self.root)
-        if side == "cancel":
-            return
-        self._submit(
-            FillRequest(
-                fill_price=price,
-                trigger=self._trigger() or price,
-                side="sell" if side == "yes" else "buy",
-                qty=qty,
-                opening=True,
-                force=True,
-            )
-        )
 
     def _run_cmd(self) -> None:
         line = self.cmd_var.get().strip()
