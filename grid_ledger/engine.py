@@ -99,6 +99,7 @@ class State:
     buy_spend: str = "0.00"
     sell_proceeds: str = "0.00"
     opening_cash: str = "0.00"
+    opening_price: Optional[str] = None
     last_price: Optional[str] = None
     ended: bool = False
     start_base: Optional[str] = None
@@ -107,10 +108,16 @@ class State:
         return self.position - self.initial_shares
 
     def occupied(self):
-        return D(self.buy_spend) - D(self.sell_proceeds)
+        trade = D(self.buy_spend) - D(self.sell_proceeds)
+        if self.opening_price is None:
+            return trade
+        return trade - D(self.opening_cash)
 
     def net_cash(self):
-        return D(self.sell_proceeds) - D(self.buy_spend)
+        trade = D(self.sell_proceeds) - D(self.buy_spend)
+        if self.opening_price is None:
+            return trade
+        return trade + D(self.opening_cash)
 
     def copy(self) -> State:
         return replace(self)
@@ -125,6 +132,7 @@ class State:
             "buy_spend": self.buy_spend,
             "sell_proceeds": self.sell_proceeds,
             "opening_cash": self.opening_cash,
+            "opening_price": self.opening_price,
             "last_price": self.last_price,
             "ended": self.ended,
             "start_base": self.start_base,
@@ -309,6 +317,18 @@ def sell_fee_cash(qty: int, price: str, rate) -> tuple[str, str, str]:
     return str(amount), str(fee), str(proceeds)
 
 
+def initial_net_cash(shares: int, price: str, config: Config):
+    """建仓现金：初始持仓按建仓价和费率算出的净现金。卖出为正，买入为负，零股为 0。"""
+    shares = integer_value(shares, "初始持仓")
+    if shares == 0:
+        return D(0)
+    if shares < 0:
+        _, _, proceeds = sell_fee_cash(-shares, price, config.sell_total_rate())
+        return D(proceeds)
+    _, _, spend = buy_fee_cash(shares, price, config.buy_fee_rate)
+    return -D(spend)
+
+
 def _walk(base: str, side: str, price: str, config: Config, first: Optional[str], max_n: int) -> list[str]:
     triggers: list[str] = []
     b = base
@@ -382,14 +402,16 @@ class Engine:
             self.config.display_places = display_places(raw_start)
         self.state = self._validated_state(state)
         self.ensure_start_base()
+        self._migrate_opening_fills()
 
     @staticmethod
     def _validated_state(state: State) -> State:
         changes = {"base": price_value(state.base, "基准价")}
-        for key in ("last_price", "start_base"):
+        labels = {"last_price": "现价", "start_base": "初始基准价", "opening_price": "建仓价"}
+        for key, label in labels.items():
             raw = getattr(state, key)
             if raw is not None:
-                changes[key] = price_value(raw, "现价" if key == "last_price" else "初始基准价")
+                changes[key] = price_value(raw, label)
         for key in ("initial_shares", "position", "buy_count", "sell_count"):
             changes[key] = integer_value(getattr(state, key), key, minimum=0 if key.endswith("count") else None)
         for key in ("buy_spend", "sell_proceeds", "opening_cash"):
@@ -615,8 +637,33 @@ class Engine:
         undone.reverse()
         return undone
 
+    def _opening_price_can_be_revised(self) -> bool:
+        if self.state.opening_price is None or any(f.kind == "grid" for f in self.fills):
+            return False
+        if not self.fills:
+            return True
+        last = self.fills[-1]
+        if last.kind != "adjust":
+            return False
+        note = last.note or ""
+        return note.startswith("修正建仓价") or note.startswith("建仓")
+
+    def _reprice_opening(self, price: str) -> Applied:
+        price = price_value(price, "建仓价")
+        cash = initial_net_cash(self.state.initial_shares, price, self.config)
+        fill = self.adjust(
+            f"修正建仓价 {self.format_price(price)}",
+            opening_price=price,
+            opening_cash=str(round_money(cash)),
+        )
+        return Applied([fill], note="已修正建仓价")
+
     @_atomic
     def keep_first_of_last_batch(self, fill_price: Optional[str] = None) -> Applied:
+        if self._opening_price_can_be_revised():
+            if fill_price is None:
+                raise ValueError("上一批本来就只有一格")
+            return self._reprice_opening(fill_price)
         if not self.fills:
             raise ValueError("没有可改的记录")
         batch_id = self.fills[-1].batch_id
@@ -644,6 +691,8 @@ class Engine:
     @_atomic
     def amend_last_price(self, price: str) -> Applied:
         price = price_value(price, "成交价")
+        if self._opening_price_can_be_revised():
+            return self._reprice_opening(price)
         if not self.fills:
             raise ValueError("没有可改的记录")
         batch_id = self.fills[-1].batch_id
@@ -717,14 +766,19 @@ class Engine:
         shares = integer_value(shares, "初始持仓")
         old = self.state.initial_shares
         config = replace(self.config, allow_short=True, allow_net_buy_over_zero=True, end_at_zero=False)
-        fill = self.adjust(
-            f"改初始持仓 {old} → {shares}", initial_shares=shares,
-            position=self.state.position + shares - old, config=config,
-        )
+        changes: dict[str, Any] = {
+            "initial_shares": shares,
+            "position": self.state.position + shares - old,
+        }
+        if self.state.opening_price is not None:
+            cash = initial_net_cash(shares, self.state.opening_price, self.config)
+            changes["opening_cash"] = str(round_money(cash))
+        fill = self.adjust(f"改初始持仓 {old} → {shares}", config=config, **changes)
         mk = self.mark()
         note = (
             f"初始持仓 {shares}（可负）  当前持仓 {self.state.position}  "
-            f"净买 {self.state.net_bought():+d}  增益 {self.format_money(mk.gain)}"
+            f"净买 {self.state.net_bought():+d}  占用 {self.format_money(mk.occupied)}  "
+            f"增益 {self.format_money(mk.gain)}"
         )
         return Applied([fill], note=note)
 
@@ -786,6 +840,59 @@ class Engine:
             pending=pending,
         )
 
+    @staticmethod
+    def _fill_cash_legs(fill: Fill) -> tuple[Any, Any]:
+        cash = abs(D(fill.cash))
+        if fill.side == "buy":
+            return cash, D(0)
+        return D(0), cash
+
+    @staticmethod
+    def _take_trade_cash(bucket: dict, buy, sell) -> None:
+        if "buy_spend" in bucket:
+            bucket["buy_spend"] = str(round_money(D(bucket["buy_spend"]) - buy))
+        if "sell_proceeds" in bucket:
+            bucket["sell_proceeds"] = str(round_money(D(bucket["sell_proceeds"]) - sell))
+
+    def _migrate_opening_fills(self) -> None:
+        openings = [f for f in self.fills if f.kind == "opening"]
+        if not openings or self.state.opening_price is not None:
+            return
+        openings.sort(key=lambda f: f.id)
+        price = price_value(openings[0].fill_price, "建仓价")
+        legs = {f.id: self._fill_cash_legs(f) for f in openings}
+        buy = sell = D(0)
+        for op in openings:
+            part_buy, part_sell = legs[op.id]
+            buy += part_buy
+            sell += part_sell
+        self.state.buy_spend = str(round_money(D(self.state.buy_spend) - buy))
+        self.state.sell_proceeds = str(round_money(D(self.state.sell_proceeds) - sell))
+        for fill in self.fills:
+            if fill.kind == "opening":
+                continue
+            prior = [op for op in openings if op.id < fill.id]
+            if not prior:
+                continue
+            part_buy = part_sell = D(0)
+            for op in prior:
+                b, s = legs[op.id]
+                part_buy += b
+                part_sell += s
+            sb = fill.state_before
+            self._take_trade_cash(sb, part_buy, part_sell)
+            sb["opening_price"] = price
+            if "initial_shares" in sb:
+                sb["opening_cash"] = str(round_money(
+                    initial_net_cash(integer_value(sb["initial_shares"], "初始持仓"), price, self.config)
+                ))
+        self.fills = [f for f in self.fills if f.kind != "opening"]
+        self.state.opening_price = price
+        self.state.opening_cash = str(round_money(
+            initial_net_cash(self.state.initial_shares, price, self.config)
+        ))
+        self.state = self._validated_state(self.state)
+
     def _apply_opening(self, req: FillRequest) -> Applied | NeedConfirm:
         if req.side not in ("buy", "sell"):
             return self._confirm(
@@ -799,15 +906,22 @@ class Engine:
         price = req.fill_price or req.trigger
         if price is None or req.qty is None:
             raise ValueError("建仓需要价格和数量")
-        price = str(round_price(D(price)))
-        trigger = str(round_price(D(req.trigger or price)))
-        fills = self._commit_batch(req.side, [trigger], price, req.qty, kind="opening", note=req.note or "建仓")
-        self.state.initial_shares = self.state.position
-        self.state.opening_cash = str(round_money(self.state.net_cash()))
-        self.state.base = trigger
-        fills[-1].base_after = self.state.base
-        fills[-1].position_after = self.state.position
-        return Applied(fills, note="建仓（不计入买卖笔数，初始持仓已对齐）")
+        price = price_value(price, "建仓价")
+        trigger = price_value(req.trigger or price, "建仓价")
+        ladder(trigger, self.config)
+        signed = -req.qty if req.side == "sell" else req.qty
+        cash = initial_net_cash(signed, price, self.config)
+        verb = "卖出" if req.side == "sell" else "买入"
+        fill = self.adjust(
+            req.note or f"建仓 {verb} {req.qty} 股 @ {self.format_price(price)}",
+            initial_shares=signed,
+            position=self.state.position + signed - self.state.initial_shares,
+            opening_price=price,
+            opening_cash=str(round_money(cash)),
+            base=trigger,
+            last_price=price,
+        )
+        return Applied([fill], note="建仓（不计入买卖笔数，按初始数据入账）")
 
     def _commit_batch(
         self,
@@ -987,7 +1101,7 @@ class Engine:
             "large_qty",
             f"{qty} 股远大于单笔 {lot}。这是建仓，还是跳格逐格？",
             [
-                ("1", f"建仓 {req.side or ''} {qty} 股 @ {self.format_price(price)}（不计入笔数，初始持仓对齐）", {"opening": True, "qty": qty, "fill_price": price, "force": True, "side": req.side}),
+                ("1", f"建仓 {req.side or ''} {qty} 股 @ {self.format_price(price)}（不计入成交，记为初始持仓）", {"opening": True, "qty": qty, "fill_price": price, "force": True, "side": req.side}),
                 ("2", f"跳格逐格（{g} 笔）", {"opening": False, "qty": qty, "grids": g, "skip": True, "force": True}),
                 ("3", "不动", {"noop": True}),
             ],

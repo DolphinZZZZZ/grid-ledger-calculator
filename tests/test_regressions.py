@@ -9,7 +9,7 @@ from grid_ledger import book
 from grid_ledger.calc import project
 from grid_ledger.cli import run_line
 from grid_ledger.engine import Config, Engine, FillRequest, MAX_TRIGGERS, State
-from grid_ledger.money import D, fmt_money, fmt_price
+from grid_ledger.money import D, fmt_money, fmt_price, round_money
 from grid_ledger.parse import parse
 
 
@@ -228,6 +228,69 @@ class TestBookValidation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 book.create("失败", value, 0)
         self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
+
+    def test_opening_fill_becomes_initial_cash_without_touching_grid(self):
+        raw = {
+            "config": {"up_pct": "0.85", "down_pct": "0.8", "display_places": 2},
+            "state": {
+                "base": "53.32",
+                "initial_shares": -500,
+                "position": -400,
+                "buy_count": 1,
+                "sell_count": 0,
+                "buy_spend": "5332.4266",
+                "sell_proceeds": "182644.0050",
+                "opening_cash": "182644.0050",
+                "last_price": "53.32",
+                "ended": False,
+                "start_base": "53.75",
+            },
+            "fills": [
+                {
+                    "id": 1, "batch_id": 1, "kind": "opening", "side": "sell", "qty": 3400,
+                    "fill_price": "53.75", "trigger_price": "53.75",
+                    "amount": "182750.0000", "fee": "105.9950", "cash": "182644.0050",
+                    "base_after": "53.75", "position_after": -3400, "note": "建仓",
+                    "state_before": {
+                        "base": "53.75", "initial_shares": 0, "position": 0,
+                        "buy_spend": "0.00", "sell_proceeds": "0.00", "opening_cash": "0.00",
+                    },
+                    "config_before": {},
+                },
+                {
+                    "id": 2, "batch_id": 2, "kind": "grid", "side": "buy", "qty": 100,
+                    "fill_price": "53.32", "trigger_price": "53.32",
+                    "amount": "5332.0000", "fee": "0.4266", "cash": "-5332.4266",
+                    "base_after": "53.32", "position_after": -3300, "note": "",
+                    "state_before": {
+                        "base": "53.75", "initial_shares": -3400, "position": -3400,
+                        "buy_spend": "0.00", "sell_proceeds": "182644.0050", "opening_cash": "182644.0050",
+                    },
+                    "config_before": {},
+                },
+            ],
+            "next_id": 3,
+            "next_batch": 3,
+        }
+        price = D("53.32")
+        old_net = D("182644.0050") - D("5332.4266")
+        old_gain = (-400 * price + old_net) - (-500 * price + D("182644.0050"))
+        eng = Engine.from_dict(raw)
+        self.assertEqual([f.kind for f in eng.fills], ["grid"])
+        self.assertEqual(eng.fills[0].cash, "-5332.4266")
+        self.assertEqual(eng.state.opening_price, "53.7500")
+        self.assertEqual(eng.state.sell_proceeds, "0.0000")
+        self.assertEqual(eng.state.buy_spend, "5332.4266")
+        self.assertEqual(eng.state.opening_cash, "26859.4125")
+        self.assertEqual(eng.fills[0].state_before["sell_proceeds"], "0.0000")
+        self.assertEqual(eng.fills[0].state_before["opening_cash"], "182644.0050")
+        self.assertEqual(eng.mark().gain, str(round_money(old_gain)))
+        eng.undo_batch()
+        self.assertEqual(eng.state.initial_shares, -3400)
+        self.assertEqual(eng.state.position, -3400)
+        self.assertEqual(eng.state.opening_cash, "182644.0050")
+        self.assertEqual(eng.state.sell_proceeds, "0.0000")
+        self.assertEqual(eng.mark().gain, "0.0000")
 
     def test_legacy_cash_is_not_recalculated(self):
         state = State(base="53.34", initial_shares=-3400, position=-3300,

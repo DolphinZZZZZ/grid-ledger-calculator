@@ -102,14 +102,19 @@ class TestInitialAndShort(unittest.TestCase):
         self.assertEqual(before.gain, "46.0561")
         self.assertEqual(before.actual, "1300.0611")
 
+        trade_cash = (eng.state.buy_spend, eng.state.sell_proceeds)
+        grids = [f.to_dict() for f in eng.fills if f.kind == "grid"]
         eng.set_initial_shares(-3000)
         self.assertEqual(eng.state.position, -2900)
         self.assertEqual(eng.state.initial_shares, -3000)
         self.assertEqual(eng.state.net_bought(), 100)
+        self.assertEqual((eng.state.buy_spend, eng.state.sell_proceeds), trade_cash)
+        self.assertEqual([f.to_dict() for f in eng.fills if f.kind == "grid"], grids)
+        self.assertEqual(eng.state.opening_cash, "161156.4750")
         after = eng.mark("53.35")
-        self.assertEqual(D(after.actual), D(before.actual) + 400 * D("53.35"))
-        self.assertEqual(D(after.hold), D(-3000) * D("53.35") + D("182644.0050"))
+        self.assertEqual(D(after.hold), D(-3000) * D("53.35") + D("161156.4750"))
         self.assertEqual(after.gain, before.gain)
+        self.assertNotEqual(after.occupied, before.occupied)
         self.assertTrue(eng.config.allow_short)
         self.assertTrue(eng.config.allow_net_buy_over_zero)
 

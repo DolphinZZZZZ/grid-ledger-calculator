@@ -30,6 +30,11 @@ def render_status_table(engine: Engine, price: str | None = None) -> str:
         f"| 初始基准价 | {engine.format_price(engine.initial_base())} |",
         f"| 当前基准价 | {engine.format_price(st.base)} |",
         f"| 初始持仓 | {st.initial_shares} 股 |",
+    ]
+    if st.opening_price is not None:
+        lines.append(f"| 建仓价 | {engine.format_price(st.opening_price)} |")
+        lines.append(f"| 建仓现金 | {engine.format_money(st.opening_cash)} |")
+    lines += [
         f"| 当前净买量 | {net:+d} 股 |",
         f"| 当前持仓 | {st.position} 股{pos_note} |",
         f"| 买入笔数 | {st.buy_count} |",
@@ -148,7 +153,7 @@ HELP = """网格记账：人工报成交入账，不下单、不拉行情。
 GUI（计算器）
   python gui.py
   python ledger.py
-  点「初始持仓」可改（允许负数），当前持仓按差额同步，保留净买量/网格增益。无净买净卖限制。
+  点「初始持仓」可改（允许负数），当前持仓按差额同步，保留净买量/网格增益。填了建仓价时，建仓现金和占用按建仓价重算，网格成交不改。无净买净卖限制。
   右下「＋」「－」按显示成交价的末位小数加减（至少按 0.01），只调整输入，不自动入账。
   每笔自动存档；右侧列表切换，可另存为 / 改名。
   价格、金额、费用与增益按四位小数计算；初始基准 53.75 显示两位，53.755 显示三位。

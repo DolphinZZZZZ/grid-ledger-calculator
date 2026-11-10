@@ -832,7 +832,7 @@ class App:
         val = _ask_int(
             self.root,
             "初始持仓",
-            "可负。当前持仓按差额同步调整，保留已发生的净买卖量与网格增益。",
+            "可负。当前持仓按差额同步，保留净买量和网格增益。填了建仓价时，建仓现金和占用按建仓价重算。",
             self.engine.state.initial_shares,
         )
         if val is None:

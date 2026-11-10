@@ -6,8 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from .engine import Config, Engine, State
-from .money import display_places, fmt_price, integer_value, price_value
+from .engine import Config, Engine, State, initial_net_cash
+from .money import display_places, fmt_price, integer_value, price_value, round_money
 
 ROOT = Path(__file__).resolve().parent.parent
 BOOKS = ROOT / "books"
@@ -207,31 +207,12 @@ def new_engine(
     if opening_price is not None:
         opening_price = price_value(opening_price, "建仓价")
     start = base
-    if opening_price is not None:
-        state = State(base=str(base), start_base=start, initial_shares=shares, position=0)
-        engine = Engine(config, state)
-        from .engine import FillRequest
-
-        side = "sell" if shares < 0 else "buy"
-        if shares == 0:
-            engine = Engine(config, State(base=str(base), start_base=start, initial_shares=0, position=0))
-        else:
-            result = engine.submit(
-                FillRequest(
-                    fill_price=str(opening_price),
-                    trigger=str(base),
-                    side=side,
-                    qty=abs(shares),
-                    opening=True,
-                    force=True,
-                )
-            )
-            from .engine import NeedConfirm
-
-            if isinstance(result, NeedConfirm):
-                raise ValueError(result.message)
-    else:
-        engine = Engine(config, State(base=str(base), start_base=start, initial_shares=shares, position=shares))
+    state = State(base=str(base), start_base=start, initial_shares=shares, position=shares)
+    if opening_price is not None and shares != 0:
+        state.opening_price = opening_price
+        state.opening_cash = str(round_money(initial_net_cash(shares, opening_price, config)))
+        state.last_price = opening_price
+    engine = Engine(config, state)
     engine.levels()
     engine.mark()
     return engine

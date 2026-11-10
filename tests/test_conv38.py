@@ -8,12 +8,16 @@ class TestConv38(unittest.TestCase):
     def _run(self) -> Engine:
         eng = Engine(Config(), State(base="53.75", initial_shares=0, position=0))
         r = eng.submit(FillRequest(fill_price="53.75", side="sell", qty=3400, opening=True, force=True))
-        self.assertEqual(r.fills[0].kind, "opening")
+        self.assertEqual(r.fills[0].kind, "adjust")
+        self.assertFalse(any(f.kind == "grid" for f in eng.fills))
         self.assertEqual(eng.state.position, -3400)
         self.assertEqual(eng.state.initial_shares, -3400)
+        self.assertEqual(eng.state.opening_price, "53.7500")
+        self.assertEqual(eng.state.sell_proceeds, "0.0000")
         self.assertEqual(eng.state.buy_count, 0)
         self.assertEqual(eng.state.sell_count, 0)
         self.assertEqual(D(eng.state.opening_cash), D("182644.0050"))
+        self.assertEqual(D(eng.mark().occupied), D("-182644.0050"))
 
         r = eng.submit(FillRequest(fill_price="53.32", side="buy"))
         self.assertEqual(r.fills[0].trigger_price, "53.3200")
