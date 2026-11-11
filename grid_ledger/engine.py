@@ -6,7 +6,19 @@ from copy import deepcopy
 from functools import wraps
 from typing import Any, Optional
 
-from .money import D, display_places, fmt_money, fmt_price, integer_value, price_value, round_money, round_price, step_value
+from .money import (
+    D,
+    display_places,
+    fee_rate_value,
+    fmt_money,
+    fmt_price,
+    integer_value,
+    price_value,
+    rate_to_fee_permyriad,
+    round_money,
+    round_price,
+    step_value,
+)
 
 
 MAX_TRIGGERS = 5000
@@ -760,6 +772,32 @@ class Engine:
             [fill],
             note=f"{note}；低吸 {self.format_price(lv.buy1)}  高抛 {self.format_price(lv.sell1)}",
         )
+
+    @_atomic
+    def set_fee_rates(
+        self,
+        buy_fee_rate: Optional[str] = None,
+        sell_fee_rate: Optional[str] = None,
+        stamp_tax_rate: Optional[str] = None,
+    ) -> Applied:
+        if buy_fee_rate is None and sell_fee_rate is None and stamp_tax_rate is None:
+            raise ValueError("没有要改的费用")
+        buy = self.config.buy_fee_rate if buy_fee_rate is None else fee_rate_value(buy_fee_rate, "买入手续费")
+        sell = self.config.sell_fee_rate if sell_fee_rate is None else fee_rate_value(sell_fee_rate, "卖出手续费")
+        stamp = self.config.stamp_tax_rate if stamp_tax_rate is None else fee_rate_value(stamp_tax_rate, "印花税")
+        config = replace(self.config, buy_fee_rate=buy, sell_fee_rate=sell, stamp_tax_rate=stamp)
+        if (buy, sell, stamp) == (self.config.buy_fee_rate, self.config.sell_fee_rate, self.config.stamp_tax_rate):
+            return Applied([], note="")
+        parts = []
+        if buy != self.config.buy_fee_rate:
+            parts.append(f"买入 {rate_to_fee_permyriad(self.config.buy_fee_rate)} → {rate_to_fee_permyriad(buy)}")
+        if sell != self.config.sell_fee_rate:
+            parts.append(f"卖出 {rate_to_fee_permyriad(self.config.sell_fee_rate)} → {rate_to_fee_permyriad(sell)}")
+        if stamp != self.config.stamp_tax_rate:
+            parts.append(f"印花税 {rate_to_fee_permyriad(self.config.stamp_tax_rate)} → {rate_to_fee_permyriad(stamp)}")
+        note = "改费用 " + "，".join(parts)
+        fill = self.adjust(note, config=config)
+        return Applied([fill], note=note)
 
     @_atomic
     def set_initial_shares(self, shares: int) -> Applied:

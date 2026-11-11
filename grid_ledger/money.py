@@ -58,6 +58,37 @@ def step_value(raw: str, label: str, down: bool = False) -> str:
     return format(value, "f")
 
 
+def _plain_number(value) -> str:
+    rendered = format(D(value), "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
+def fee_rate_value(raw: str, label: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{label}不能为空")
+    value = D(text)
+    if value < 0 or value >= 1:
+        raise ValueError(f"{label}必须不小于 0 且小于 1")
+    return _plain_number(value)
+
+
+def rate_to_fee_permyriad(rate: str) -> str:
+    return _plain_number(D(rate) * D(10000))
+
+
+def fee_permyriad_to_rate(raw: str, label: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{label}不能为空")
+    value = D(text)
+    if value < 0 or value >= 10000:
+        raise ValueError(f"{label}必须不小于 0 且小于 10000")
+    return _plain_number(value / D(10000))
+
+
 def display_places(raw: Number) -> int:
     return max(2, min(3, -D(raw).as_tuple().exponent))
 

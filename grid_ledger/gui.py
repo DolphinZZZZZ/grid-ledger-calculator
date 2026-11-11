@@ -10,7 +10,7 @@ from .calc import GridProjection, project
 from .cli import run_line
 from .engine import Applied, Config, Engine, FillRequest, NeedConfirm
 from .format import _side_cn
-from .money import D, display_places, fmt_price, integer_value, price_value
+from .money import D, display_places, fee_permyriad_to_rate, fmt_price, integer_value, price_value, rate_to_fee_permyriad
 from .parse import parse
 
 
@@ -163,6 +163,7 @@ class App:
         self._btn(header, "另存为", self._save_as, KEY).pack(side="right", padx=6)
         self._btn(header, "新建", self._new_book, KEY).pack(side="right")
         self._btn(header, "计算器", self._open_calc, KEY).pack(side="right", padx=6)
+        self._btn(header, "手续费", self._edit_fees, KEY).pack(side="right")
         r.protocol("WM_DELETE_WINDOW", self._on_close)
 
         body = tk.Frame(r, bg=BG)
@@ -825,6 +826,30 @@ class App:
             return
         self._after_result(result)
 
+    def _edit_fees(self) -> None:
+        if not self.engine or not self.name:
+            self._flash("请先新建或打开账本")
+            return
+        cfg = self.engine.config
+        dlg = FeeDialog(self.root, cfg.buy_fee_rate, cfg.sell_fee_rate, cfg.stamp_tax_rate)
+        if not dlg.result:
+            return
+        rates = dlg.result
+        if (
+            rates["buy_fee_rate"] == cfg.buy_fee_rate
+            and rates["sell_fee_rate"] == cfg.sell_fee_rate
+            and rates["stamp_tax_rate"] == cfg.stamp_tax_rate
+        ):
+            return
+        try:
+            result = self.engine.set_fee_rates(**rates)
+        except Exception as e:
+            self._input_error(e)
+            return
+        if not result.fills:
+            return
+        self._after_result(result)
+
     def _edit_initial(self) -> None:
         if not self.engine or not self.name:
             self._flash("请先新建或打开账本")
@@ -1462,6 +1487,56 @@ def _ask_int(parent: tk.Tk, title: str, prompt: str, initial: int) -> int | None
     win.bind("<Escape>", lambda e: cancel())
     parent.wait_window(win)
     return out["v"]
+
+
+class FeeDialog:
+    def __init__(self, parent: tk.Tk, buy: str, sell: str, stamp: str):
+        self.result = None
+        win = tk.Toplevel(parent)
+        win.title("手续费")
+        win.configure(bg=BG)
+        win.transient(parent)
+        win.grab_set()
+        win.geometry("440x300")
+        vars = {
+            "buy": tk.StringVar(value=rate_to_fee_permyriad(buy)),
+            "sell": tk.StringVar(value=rate_to_fee_permyriad(sell)),
+            "stamp": tk.StringVar(value=rate_to_fee_permyriad(stamp)),
+        }
+        labels = (
+            ("buy", "买入手续费（万分之）"),
+            ("sell", "卖出手续费（万分之）"),
+            ("stamp", "印花税（万分之，仅卖出）"),
+        )
+        for key, lab in labels:
+            tk.Label(win, text=lab, fg=MUTED, bg=BG, font=_ui_font(10)).pack(anchor="w", padx=16, pady=(12, 0))
+            tk.Entry(win, textvariable=vars[key], bg=PANEL, fg=TEXT, insertbackground=TEXT, bd=0, font=_mono(14)).pack(
+                fill="x", padx=16, ipady=5
+            )
+
+        def ok():
+            try:
+                buy_rate = fee_permyriad_to_rate(vars["buy"].get(), "买入手续费")
+                sell_rate = fee_permyriad_to_rate(vars["sell"].get(), "卖出手续费")
+                stamp_rate = fee_permyriad_to_rate(vars["stamp"].get(), "印花税")
+                if D(sell_rate) + D(stamp_rate) >= 1:
+                    raise ValueError("卖出手续费与印花税合计必须小于万分之 10000")
+            except Exception as e:
+                messagebox.showerror("输入有误", str(e), parent=win)
+                return
+            self.result = {
+                "buy_fee_rate": buy_rate,
+                "sell_fee_rate": sell_rate,
+                "stamp_tax_rate": stamp_rate,
+            }
+            win.destroy()
+
+        tk.Button(win, text="确定", command=ok, bg=ENTER, fg=TEXT, bd=0, font=_ui_font(12, True), pady=8).pack(
+            fill="x", padx=16, pady=16
+        )
+        win.bind("<Return>", lambda e: ok())
+        win.bind("<Escape>", lambda e: win.destroy())
+        parent.wait_window(win)
 
 
 class NewBookDialog:

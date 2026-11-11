@@ -1,6 +1,18 @@
 import unittest
 
-from grid_ledger.engine import Config, Engine, FillRequest, NeedConfirm, State, buy_level, sell_level
+from grid_ledger.engine import (
+    Config,
+    Engine,
+    FillRequest,
+    NeedConfirm,
+    State,
+    buy_fee_cash,
+    buy_level,
+    initial_net_cash,
+    sell_fee_cash,
+    sell_level,
+)
+from grid_ledger.money import D
 
 
 class TestLevels(unittest.TestCase):
@@ -190,6 +202,72 @@ class TestNear(unittest.TestCase):
         result = eng.submit(FillRequest(fill_price="54.16"))
         self.assertNotIsInstance(result, NeedConfirm)
         self.assertEqual(result.fills[0].side, "sell")
+
+
+class TestFeeRates(unittest.TestCase):
+    def test_builtin_defaults(self):
+        cfg = Config()
+        self.assertEqual(cfg.buy_fee_rate, "0.00008")
+        self.assertEqual(cfg.sell_fee_rate, "0.00008")
+        self.assertEqual(cfg.stamp_tax_rate, "0.0005")
+
+    def test_stamp_is_charged_on_sell_only(self):
+        cfg = Config()
+        no_stamp = Config(stamp_tax_rate="0")
+        self.assertEqual(initial_net_cash(100, "53.75", cfg), initial_net_cash(100, "53.75", no_stamp))
+        self.assertEqual(initial_net_cash(100, "53.75", cfg), D("-5375.4300"))
+        self.assertNotEqual(initial_net_cash(-100, "53.75", cfg), initial_net_cash(-100, "53.75", no_stamp))
+        self.assertEqual(initial_net_cash(-100, "53.75", cfg), D("5371.8825"))
+
+        eng = Engine(Config(stamp_tax_rate="0.002"), State(base="53.75", initial_shares=0, position=0))
+        buy = eng.submit(FillRequest(fill_price="53.32", side="buy"))
+        self.assertEqual(buy.fills[0].fee, "0.4266")
+
+    def test_set_fee_rates_affects_later_trades_only_and_undoes(self):
+        eng = Engine(Config(), State(base="53.75", initial_shares=0, position=0))
+        buy = eng.submit(FillRequest(fill_price="53.32", side="buy"))
+        self.assertEqual(buy.fills[0].fee, "0.4266")
+        changed = eng.set_fee_rates(buy_fee_rate="0.0001", sell_fee_rate="0.0002", stamp_tax_rate="0.001")
+        self.assertEqual(changed.note, "改费用 买入 0.8 → 1，卖出 0.8 → 2，印花税 5 → 10")
+        self.assertEqual(eng.fills[0].fee, "0.4266")
+        same = eng.set_fee_rates(buy_fee_rate="0.000100", sell_fee_rate="0.0002", stamp_tax_rate="0.0010")
+        self.assertEqual(same.fills, [])
+
+        sell_price = eng.levels().sell1
+        sell = eng.submit(FillRequest(fill_price=sell_price, side="sell"))
+        stamped = sell_fee_cash(100, sell_price, D(eng.config.sell_fee_rate) + D(eng.config.stamp_tax_rate))[1]
+        sell_only = sell_fee_cash(100, sell_price, eng.config.sell_fee_rate)[1]
+        self.assertEqual(sell.fills[0].fee, stamped)
+        self.assertNotEqual(stamped, sell_only)
+
+        buy_price = eng.levels().buy1
+        later = eng.submit(FillRequest(fill_price=buy_price, side="buy"))
+        self.assertEqual(later.fills[0].fee, buy_fee_cash(100, buy_price, eng.config.buy_fee_rate)[1])
+        self.assertNotEqual(
+            later.fills[0].fee,
+            buy_fee_cash(100, buy_price, D(eng.config.buy_fee_rate) + D(eng.config.stamp_tax_rate))[1],
+        )
+
+        eng.undo_batch(3)
+        self.assertEqual(eng.config.buy_fee_rate, "0.00008")
+        self.assertEqual(eng.config.sell_fee_rate, "0.00008")
+        self.assertEqual(eng.config.stamp_tax_rate, "0.0005")
+        self.assertEqual([f.kind for f in eng.fills], ["grid"])
+        self.assertEqual(eng.fills[0].fee, "0.4266")
+
+    def test_invalid_fee_rates_do_not_change_the_book(self):
+        eng = Engine(Config(), State(base="53.75", initial_shares=0, position=0))
+        before = eng.to_dict()
+        for kwargs in (
+            {"buy_fee_rate": "-0.1"},
+            {"sell_fee_rate": "1"},
+            {"stamp_tax_rate": ""},
+            {"sell_fee_rate": "0.6", "stamp_tax_rate": "0.5"},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    eng.set_fee_rates(**kwargs)
+                self.assertEqual(eng.to_dict(), before)
 
 
 if __name__ == "__main__":

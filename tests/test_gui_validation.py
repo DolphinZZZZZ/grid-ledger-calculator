@@ -277,6 +277,53 @@ class TestGuiValidation(unittest.TestCase):
         self._run_modal_action(action, lambda: self.app._edit_step("down"))
         self.assertEqual(self.app.engine.config.down_pct, "0.7")
 
+    def test_fee_button_is_left_of_calculator_and_keeps_builtin_defaults(self):
+        header = self.app.root.winfo_children()[0]
+        texts = [w.cget("text") for w in header.winfo_children() if isinstance(w, self.tk.Button)]
+        self.assertEqual(texts, ["改名", "另存为", "新建", "计算器", "手续费"])
+        cfg = self.app.engine.config
+        self.assertEqual((cfg.buy_fee_rate, cfg.sell_fee_rate, cfg.stamp_tax_rate), ("0.00008", "0.00008", "0.0005"))
+
+        def action(win):
+            entries = [w for w in descendants(win) if isinstance(w, self.tk.Entry)]
+            self.assertEqual([entry.get() for entry in entries], ["0.8", "0.8", "5"])
+            labels = [w.cget("text") for w in descendants(win) if isinstance(w, self.tk.Label)]
+            self.assertIn("印花税（万分之，仅卖出）", labels)
+            entries[2].delete(0, "end")
+            entries[2].insert(0, "1")
+            button = next(w for w in descendants(win) if isinstance(w, self.tk.Button) and w.cget("text") == "确定")
+            button.invoke()
+
+        before = len(self.app.engine.fills)
+        self._run_modal_action(action, self.app._edit_fees)
+        self.assertEqual(self.app.engine.config.buy_fee_rate, "0.00008")
+        self.assertEqual(self.app.engine.config.sell_fee_rate, "0.00008")
+        self.assertEqual(self.app.engine.config.stamp_tax_rate, "0.0001")
+        self.assertEqual(len(self.app.engine.fills), before + 1)
+
+    def test_fee_dialog_rejects_invalid_rate_and_ignores_unchanged_values(self):
+        def reject(win):
+            entries = [w for w in descendants(win) if isinstance(w, self.tk.Entry)]
+            entries[0].delete(0, "end")
+            entries[0].insert(0, "10000")
+            button = next(w for w in descendants(win) if isinstance(w, self.tk.Button) and w.cget("text") == "确定")
+            button.invoke()
+            self.popup.assert_called_once()
+            self.assertTrue(win.winfo_exists())
+            self.assertEqual(entries[0].get(), "10000")
+            self.assertEqual(self.app.engine.config.buy_fee_rate, "0.00008")
+
+        self._run_modal_action(reject, self.app._edit_fees)
+        self.assertEqual(self.app.engine.fills, [])
+
+        def accept_same(win):
+            button = next(w for w in descendants(win) if isinstance(w, self.tk.Button) and w.cget("text") == "确定")
+            button.invoke()
+
+        self._run_modal_action(accept_same, self.app._edit_fees)
+        self.assertEqual(self.app.engine.fills, [])
+        self.assertEqual(self.app.engine.config.stamp_tax_rate, "0.0005")
+
 
 if __name__ == "__main__":
     unittest.main()
